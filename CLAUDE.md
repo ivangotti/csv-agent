@@ -34,6 +34,9 @@ This is a Node.js application using ES modules (`"type": "module"`) that automat
   - `getProfileMapping(config, appId)`: Fetches app-to-user profile mapping configuration
   - `updateProfileMapping(config, mappingId, properties)`: Updates profile mapping with new attribute mappings
   - `processAttributeMappings(config, appId, attributes)`: Creates mappings from custom attributes to Okta user profile
+  - `generateEntitlementCatalog(csvFilePath)`: Parses CSV to extract unique values from columns with `ent_` prefix
+  - `getAppEntitlements(config, appId)`: Fetches existing entitlements from Okta Governance API (tries multiple endpoint patterns)
+  - `processEntitlements(config, appId, csvFilePath)`: Generates entitlement catalog and checks against Okta Governance
 
 - **config.js**: Configuration management module with four key functions:
   - `getConfig()`: Main entry point - returns config from file or prompts user
@@ -69,7 +72,14 @@ This is a Node.js application using ES modules (`"type": "module"`) that automat
    - Create bidirectional mappings from app attributes to Okta user profile
    - Update mapping configuration via POST to `/api/v1/mappings/{id}`
    - Display mapping results (matched/unmatched attributes)
-7. Report: Show processing complete message
+7. Entitlement Catalog Processing:
+   - Parse CSV to find all columns starting with `ent_` prefix
+   - Extract unique values from each entitlement column (handles comma-separated values)
+   - Check Okta Governance API availability (tries multiple endpoint patterns)
+   - If API available: Display catalog with status (exists in Okta vs. new)
+   - If API unavailable: Display catalog with manual import instructions
+   - Provide guidance for importing entitlements into Okta Identity Governance
+8. Report: Show processing complete message
 
 ### Configuration Flow
 
@@ -92,6 +102,9 @@ The application uses direct `fetch()` calls to Okta REST APIs:
 - **Create App**: `POST /api/v1/apps` with SAML 2.0 definition
 - **Get App User Schema**: `GET /api/v1/meta/schemas/apps/{appId}/default`
 - **Create Custom Attribute**: `POST /api/v1/meta/schemas/apps/{appId}/default`
+- **Get Profile Mappings**: `GET /api/v1/mappings?sourceId={appId}`
+- **Update Profile Mapping**: `POST /api/v1/mappings/{mappingId}`
+- **Get Entitlements**: `GET /api/v1/governance/resources/{appId}/entitlements` (or alternative endpoints)
 
 Authentication uses SSWS token in Authorization header:
 ```javascript
@@ -103,9 +116,19 @@ headers: {
 
 ### CSV Column Processing
 
-- Columns starting with `ent_` are excluded from custom attribute creation
+**Custom Attributes:**
+- Columns NOT starting with `ent_` are processed as custom app user attributes
 - Uses `csv-parse` library to read CSV headers
 - Custom attributes are created with type `string` and scope `NONE`
+- Checks for duplicates before creation
+
+**Entitlements:**
+- Columns starting with `ent_` are processed as entitlements (e.g., ent_UserRole, ent_Permissions)
+- Parses entire CSV file to extract all unique values from entitlement columns
+- Handles comma-separated values within cells (e.g., "Role1,Role2" becomes ["Role1", "Role2"])
+- Deduplicates values and sorts alphabetically
+- Checks against Okta Governance API for existing entitlements
+- Provides catalog for manual import if API creation is not supported
 
 ### SAML App Defaults
 
