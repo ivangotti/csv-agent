@@ -90,7 +90,13 @@ The application automates SAML 2.0 application creation and custom attribute man
    - Creates bidirectional mappings between app and Okta user profile
    - Supports variations (e.g., first_name, fname → firstName)
    - Handles unmatched attributes gracefully
-8. **Confirmation**: Displays the app ID, status, custom attributes, and mappings created
+8. **Entitlement Catalog**: Generates entitlement catalog from CSV columns with `ent_` prefix
+   - Parses all columns starting with `ent_` (e.g., ent_UserRole, ent_Permissions, ent_CostCenter)
+   - Extracts unique values from each entitlement column
+   - Handles comma-separated values within cells (e.g., "Role1,Role2")
+   - Checks Okta Governance API for existing entitlements
+   - Provides guidance for importing entitlements into Okta Identity Governance
+9. **Confirmation**: Displays the app ID, status, custom attributes, mappings, and entitlements created
 
 ### Example Usage
 
@@ -411,6 +417,87 @@ To view the created mappings in Okta:
 1. Go to **Applications** → Select your app
 2. Navigate to **Provisioning** → **To Okta**
 3. View the attribute mappings from app to Okta Universal Directory
+
+## Entitlement Catalog
+
+The application automatically generates an entitlement catalog from CSV columns prefixed with `ent_`. This feature is inspired by role mining techniques and helps identify fine-grained authorizations in IAM systems.
+
+### What are Entitlements?
+
+**Entitlements** represent fine-grained user authorizations that determine what actions users can perform and what resources they can access. In this tool, entitlements are represented as CSV columns with the `ent_` prefix.
+
+### How It Works
+
+1. **Column Detection**: Identifies all CSV columns starting with `ent_`
+2. **Value Extraction**: Reads all values from entitlement columns across all records
+3. **Comma-Separated Handling**: Splits values like "Role1,Role2" into individual entitlements
+4. **Deduplication**: Creates a unique set of values for each entitlement type
+5. **Governance Check**: Queries Okta Identity Governance API for existing entitlements
+6. **Status Report**: Shows which entitlements exist in Okta vs. new ones from CSV
+
+### CSV Column Examples
+
+```csv
+Username,firstName,lastName,ent_CostCenter,ent_UserRole,ent_Permissions
+user1@example.com,John,Doe,CC100,"Manager,Analyst","View,Approve"
+user2@example.com,Jane,Smith,CC200,Consultant,"View,Verify,Submit"
+```
+
+From this CSV:
+- **ent_CostCenter**: Organizational units (CC100, CC200, CC300, etc.)
+- **ent_UserRole**: Job functions (Manager, Analyst, Consultant, etc.)
+- **ent_Permissions**: Access rights (View, Approve, Submit, Verify, etc.)
+
+### Example Output
+
+```
+📦 STEP 5: Entitlement Catalog Creation
+   → Parsing CSV file for entitlement columns (ent_*)...
+   ✓ Found 3 entitlement column(s):
+     • ent_CostCenter: 7 unique value(s)
+     • ent_UserRole: 7 unique value(s)
+     • ent_Permissions: 6 unique value(s)
+   → Total unique entitlements to create: 20
+
+   → Checking Okta Governance API availability...
+   ✓ Governance API available (read-only)
+   → Current entitlements in system: 1489
+
+   📋 Entitlement Catalog from CSV:
+
+   → CostCenter (7 values):
+     • CC100 (✓ exists in Okta)
+     • CC200 (new)
+     • CC300 (✓ exists in Okta)
+     [...]
+
+   📊 Entitlement Catalog Summary:
+     • Total unique entitlements identified: 20
+     • Entitlement types: 3
+```
+
+### Important Notes
+
+- **Read-Only API**: Okta Identity Governance entitlements are typically imported/synced from connected applications, not created manually via API
+- **Licensing Required**: This feature requires Okta Identity Governance (OIG) license
+- **Manual Import**: If the governance API is unavailable, the app displays the catalog with instructions for manual import
+
+### Importing Entitlements
+
+To import entitlements into Okta Identity Governance:
+1. Login to Okta Admin Console
+2. Navigate to **Identity Governance → Resources**
+3. Select your application
+4. Configure entitlement import/discovery settings
+5. Map CSV columns to entitlement attributes
+6. Run entitlement import to sync from your data source
+
+### Use Cases
+
+- **IAM Entitlement Analysis**: Discover what fine-grained permissions exist in your CSV data
+- **Role Mining**: Use the catalog as input for role mining and RBAC design
+- **Governance Setup**: Understand what entitlements need to be configured in Okta
+- **Audit & Compliance**: Document all entitlement types and values for compliance reviews
 
 ## SAML Configuration Notes
 
