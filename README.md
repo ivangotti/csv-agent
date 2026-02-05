@@ -85,7 +85,12 @@ The application automates SAML 2.0 application creation and custom attribute man
    - Filters out columns starting with `ent_` (enterprise columns)
    - Creates custom app user attributes for each remaining column
    - Checks existing attributes to avoid duplicates
-7. **Confirmation**: Displays the app ID, status, and custom attributes created
+7. **Profile Mapping**: Automatically maps custom attributes to Okta user profile fields
+   - Matches attribute names to Okta native fields (firstName, lastName, email, etc.)
+   - Creates bidirectional mappings between app and Okta user profile
+   - Supports variations (e.g., first_name, fname → firstName)
+   - Handles unmatched attributes gracefully
+8. **Confirmation**: Displays the app ID, status, custom attributes, and mappings created
 
 ### Example Usage
 
@@ -321,6 +326,91 @@ After the app runs, you can view the created custom attributes in Okta:
 1. Go to **Applications** → Select your app
 2. Navigate to **Provisioning** → **To App**
 3. View the custom attributes in the attribute mappings
+
+## Profile Attribute Mapping
+
+The application automatically creates profile mappings between custom app attributes and Okta user profile fields.
+
+### How It Works
+
+1. **Intelligent Matching**: The app analyzes each custom attribute name and attempts to match it to Okta's native user profile attributes
+2. **Case-Insensitive**: Matching is case-insensitive and removes special characters
+3. **Variation Support**: Recognizes common variations (e.g., `first_name`, `fname`, `givenName` all map to `firstName`)
+4. **Automatic Mapping**: Creates bidirectional mappings in Okta's profile mapping configuration
+
+### Supported Okta Attributes
+
+The app recognizes and maps to these Okta Universal Directory attributes:
+
+**Core Attributes:**
+- `login`, `username` → `user.login`
+- `email` → `user.email`
+
+**Name Attributes:**
+- `firstName`, `first_name`, `fname`, `givenName` → `user.firstName`
+- `lastName`, `last_name`, `lname`, `surname` → `user.lastName`
+- `middleName`, `middle_name` → `user.middleName`
+- `displayName`, `display_name` → `user.displayName`
+
+**Contact Attributes:**
+- `phone`, `primaryPhone`, `phoneNumber` → `user.primaryPhone`
+- `mobile`, `mobilePhone`, `cellPhone` → `user.mobilePhone`
+
+**Address Attributes:**
+- `street`, `address`, `streetAddress` → `user.streetAddress`
+- `city` → `user.city`
+- `state`, `province` → `user.state`
+- `zipCode`, `zip`, `postalCode` → `user.zipCode`
+- `country`, `countryCode` → `user.countryCode`
+
+**Organization Attributes:**
+- `department`, `dept` → `user.department`
+- `title`, `jobTitle` → `user.title`
+- `employeeNumber`, `employeeId`, `employee_number` → `user.employeeNumber`
+- `organization`, `company` → `user.organization`
+- `division` → `user.division`
+- `costCenter`, `cost_center` → `user.costCenter`
+- `manager`, `managerId` → `user.manager`
+
+### Example Mapping Output
+
+```
+🔗 STEP 5: Profile Attribute Mapping
+   → Analyzing custom attributes for Okta user profile mappings...
+
+   → Matched attributes: 6
+     • Username → user.login
+     • firstName → user.firstName
+     • lastName → user.lastName
+     • email → user.email
+     • employeeId → user.employeeNumber
+     • department → user.department
+
+   → Unmatched attributes (no standard Okta field): 1
+     • startDate (will remain as custom attribute only)
+
+   → Fetching profile mapping configuration...
+   → API Call: GET /api/v1/mappings?sourceId=0oatwx8zgtwuFRc0Y417
+   ✓ Profile mapping found (ID: prmtwx8zh41aQQfJO417)
+
+   → Creating attribute mappings...
+   [...]
+   ✓ Profile mappings updated successfully
+
+   📊 Mapping Summary:
+     • Total attributes analyzed: 7
+     • Matched to Okta fields: 6
+     • Mappings created: 6
+     • Mappings already existed: 0
+     • Unmatched attributes: 1
+```
+
+### Viewing Profile Mappings
+
+To view the created mappings in Okta:
+1. Go to **Applications** → Select your app
+2. Navigate to **Provisioning** → **To Okta**
+3. View the attribute mappings from app to Okta Universal Directory
 
 ## SAML Configuration Notes
 

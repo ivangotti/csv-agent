@@ -29,6 +29,11 @@ This is a Node.js application using ES modules (`"type": "module"`) that automat
   - `getAppUserSchema(config, appId)`: Retrieves current app user schema from Okta
   - `createCustomAttribute(config, appId, attributeName)`: Creates a single custom attribute in app user schema
   - `processCustomAttributes(config, appId, csvFilePath)`: Orchestrates custom attribute creation from CSV columns
+  - `getOktaNativeAttributes()`: Returns mapping of common attribute name variations to Okta native fields
+  - `findMatchingOktaAttribute(attributeName)`: Matches custom attribute names to Okta user profile attributes
+  - `getProfileMapping(config, appId)`: Fetches app-to-user profile mapping configuration
+  - `updateProfileMapping(config, mappingId, properties)`: Updates profile mapping with new attribute mappings
+  - `processAttributeMappings(config, appId, attributes)`: Creates mappings from custom attributes to Okta user profile
 
 - **config.js**: Configuration management module with four key functions:
   - `getConfig()`: Main entry point - returns config from file or prompts user
@@ -57,7 +62,14 @@ This is a Node.js application using ES modules (`"type": "module"`) that automat
    - Fetch existing app user schema from Okta
    - Create custom attributes for columns that don't already exist
    - Display results (created/skipped attributes)
-6. Report: Show processing complete message
+6. Profile Attribute Mapping:
+   - Analyze custom attribute names for matches to Okta native user profile attributes
+   - Support case-insensitive matching with variation recognition (e.g., first_name → firstName)
+   - Fetch profile mapping configuration using `/api/v1/mappings`
+   - Create bidirectional mappings from app attributes to Okta user profile
+   - Update mapping configuration via POST to `/api/v1/mappings/{id}`
+   - Display mapping results (matched/unmatched attributes)
+7. Report: Show processing complete message
 
 ### Configuration Flow
 

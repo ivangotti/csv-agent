@@ -180,6 +180,172 @@ async function getAppUserSchema(config, appId) {
 }
 
 /**
+ * Get Okta native user profile attributes
+ * These are the standard attributes in Okta Universal Directory
+ */
+function getOktaNativeAttributes() {
+  return {
+    // Core attributes
+    'login': 'login',
+    'email': 'email',
+    'username': 'login',
+
+    // Name attributes
+    'firstname': 'firstName',
+    'first_name': 'firstName',
+    'fname': 'firstName',
+    'givenname': 'firstName',
+    'lastname': 'lastName',
+    'last_name': 'lastName',
+    'lname': 'lastName',
+    'surname': 'lastName',
+    'familyname': 'lastName',
+    'middlename': 'middleName',
+    'middle_name': 'middleName',
+    'displayname': 'displayName',
+    'display_name': 'displayName',
+    'nickname': 'nickName',
+    'nick_name': 'nickName',
+
+    // Title and prefix
+    'title': 'title',
+    'jobtitle': 'title',
+    'job_title': 'title',
+    'honorificprefix': 'honorificPrefix',
+    'prefix': 'honorificPrefix',
+    'honorificsuffix': 'honorificSuffix',
+    'suffix': 'honorificSuffix',
+
+    // Contact attributes
+    'primaryphone': 'primaryPhone',
+    'primary_phone': 'primaryPhone',
+    'phone': 'primaryPhone',
+    'phonenumber': 'primaryPhone',
+    'mobilephone': 'mobilePhone',
+    'mobile_phone': 'mobilePhone',
+    'mobile': 'mobilePhone',
+    'cellphone': 'mobilePhone',
+
+    // Address attributes
+    'streetaddress': 'streetAddress',
+    'street_address': 'streetAddress',
+    'address': 'streetAddress',
+    'street': 'streetAddress',
+    'city': 'city',
+    'state': 'state',
+    'stateprovince': 'state',
+    'province': 'state',
+    'zipcode': 'zipCode',
+    'zip_code': 'zipCode',
+    'zip': 'zipCode',
+    'postalcode': 'zipCode',
+    'postal_code': 'zipCode',
+    'countrycode': 'countryCode',
+    'country_code': 'countryCode',
+    'country': 'countryCode',
+    'postaladdress': 'postalAddress',
+    'postal_address': 'postalAddress',
+
+    // Locale and language
+    'preferredlanguage': 'preferredLanguage',
+    'preferred_language': 'preferredLanguage',
+    'language': 'preferredLanguage',
+    'locale': 'locale',
+    'timezone': 'timezone',
+    'time_zone': 'timezone',
+
+    // Organization attributes
+    'usertype': 'userType',
+    'user_type': 'userType',
+    'employeenumber': 'employeeNumber',
+    'employee_number': 'employeeNumber',
+    'employeeid': 'employeeNumber',
+    'employee_id': 'employeeNumber',
+    'costcenter': 'costCenter',
+    'cost_center': 'costCenter',
+    'organization': 'organization',
+    'org': 'organization',
+    'company': 'organization',
+    'division': 'division',
+    'department': 'department',
+    'dept': 'department',
+    'managerid': 'managerId',
+    'manager_id': 'managerId',
+    'manager': 'manager',
+
+    // Profile
+    'profileurl': 'profileUrl',
+    'profile_url': 'profileUrl'
+  };
+}
+
+/**
+ * Find matching Okta native attribute for a custom attribute name
+ */
+function findMatchingOktaAttribute(attributeName) {
+  const nativeAttributes = getOktaNativeAttributes();
+  const normalizedName = attributeName.toLowerCase().replace(/[-_\s]/g, '');
+
+  return nativeAttributes[normalizedName] || null;
+}
+
+/**
+ * Get app-to-user profile mapping
+ */
+async function getProfileMapping(config, appId) {
+  try {
+    const response = await fetch(
+      `https://${config.oktaDomain}/api/v1/mappings?sourceId=${appId}`,
+      {
+        headers: {
+          'Authorization': `SSWS ${config.apiToken}`,
+          'Accept': 'application/json'
+        }
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(`Failed to get profile mappings: ${response.statusText}`);
+    }
+
+    const mappings = await response.json();
+    // Find the mapping from app to user
+    return mappings.find(m => m.target.type === 'user');
+  } catch (error) {
+    throw new Error(`Error getting profile mapping: ${error.message}`);
+  }
+}
+
+/**
+ * Update profile mapping to add attribute mapping
+ */
+async function updateProfileMapping(config, mappingId, mappingProperties) {
+  try {
+    const response = await fetch(
+      `https://${config.oktaDomain}/api/v1/mappings/${mappingId}`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `SSWS ${config.apiToken}`,
+          'Accept': 'application/json',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(mappingProperties)
+      }
+    );
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new Error(`Failed to update profile mapping: ${response.statusText} - ${errorBody}`);
+    }
+
+    return await response.json();
+  } catch (error) {
+    throw new Error(`Error updating profile mapping: ${error.message}`);
+  }
+}
+
+/**
  * Create a custom attribute in app user schema
  */
 async function createCustomAttribute(config, appId, attributeName) {
@@ -230,6 +396,125 @@ async function createCustomAttribute(config, appId, attributeName) {
 }
 
 /**
+ * Process attribute mappings from app to Okta user profile
+ */
+async function processAttributeMappings(config, appId, createdAttributes) {
+  if (createdAttributes.length === 0) {
+    return;
+  }
+
+  console.log('');
+  console.log('🔗 STEP 5: Profile Attribute Mapping');
+  console.log('   → Analyzing custom attributes for Okta user profile mappings...');
+  console.log('');
+
+  // Find matching Okta attributes
+  const matchedAttributes = [];
+  const unmatchedAttributes = [];
+
+  for (const attributeName of createdAttributes) {
+    const oktaAttribute = findMatchingOktaAttribute(attributeName);
+    if (oktaAttribute) {
+      matchedAttributes.push({
+        customAttribute: attributeName,
+        oktaAttribute: oktaAttribute
+      });
+    } else {
+      unmatchedAttributes.push(attributeName);
+    }
+  }
+
+  console.log(`   → Matched attributes: ${matchedAttributes.length}`);
+  if (matchedAttributes.length > 0) {
+    matchedAttributes.forEach(match => {
+      console.log(`     • ${match.customAttribute} → user.${match.oktaAttribute}`);
+    });
+  }
+  console.log('');
+
+  if (unmatchedAttributes.length > 0) {
+    console.log(`   → Unmatched attributes (no standard Okta field): ${unmatchedAttributes.length}`);
+    unmatchedAttributes.forEach(attr => {
+      console.log(`     • ${attr} (will remain as custom attribute only)`);
+    });
+    console.log('');
+  }
+
+  if (matchedAttributes.length === 0) {
+    console.log('   ℹ No attributes matched Okta user profile fields');
+    console.log('   → Skipping profile mapping');
+    return;
+  }
+
+  // Get the profile mapping
+  console.log('   → Fetching profile mapping configuration...');
+  console.log(`   → API Call: GET /api/v1/mappings?sourceId=${appId}`);
+  const profileMapping = await getProfileMapping(config, appId);
+
+  if (!profileMapping) {
+    console.log('   ✗ Profile mapping not found for this application');
+    console.log('   → This may happen if the app was just created');
+    console.log('   → Mappings can be configured manually in Okta Admin Console');
+    return;
+  }
+
+  console.log(`   ✓ Profile mapping found (ID: ${profileMapping.id})`);
+  console.log('');
+
+  // Build mapping properties
+  const currentProperties = profileMapping.properties || {};
+  let mappingsAdded = 0;
+  let mappingsSkipped = 0;
+
+  console.log('   → Creating attribute mappings...');
+  console.log('');
+
+  for (const match of matchedAttributes) {
+    const mappingKey = match.oktaAttribute;
+
+    // Check if mapping already exists
+    if (currentProperties[mappingKey]) {
+      console.log(`   → Mapping for ${match.customAttribute}:`);
+      console.log(`     ℹ Already exists: user.${mappingKey}`);
+      mappingsSkipped++;
+    } else {
+      console.log(`   → Mapping for ${match.customAttribute}:`);
+      console.log(`     ✓ Creating: appuser.${match.customAttribute} → user.${mappingKey}`);
+
+      // Add new mapping
+      currentProperties[mappingKey] = {
+        expression: `appuser.${match.customAttribute}`
+      };
+      mappingsAdded++;
+    }
+    console.log('');
+  }
+
+  // Update the mapping if we added any
+  if (mappingsAdded > 0) {
+    console.log(`   → Updating profile mapping with ${mappingsAdded} new mapping(s)...`);
+    console.log(`   → API Call: POST /api/v1/mappings/${profileMapping.id}`);
+
+    const updatedMapping = {
+      properties: currentProperties
+    };
+
+    await updateProfileMapping(config, profileMapping.id, updatedMapping);
+    console.log('   ✓ Profile mappings updated successfully');
+  } else {
+    console.log('   ℹ All matching attributes already have mappings');
+  }
+
+  console.log('');
+  console.log('   📊 Mapping Summary:');
+  console.log(`     • Total attributes analyzed: ${createdAttributes.length}`);
+  console.log(`     • Matched to Okta fields: ${matchedAttributes.length}`);
+  console.log(`     • Mappings created: ${mappingsAdded}`);
+  console.log(`     • Mappings already existed: ${mappingsSkipped}`);
+  console.log(`     • Unmatched attributes: ${unmatchedAttributes.length}`);
+}
+
+/**
  * Process CSV columns and create custom attributes
  */
 async function processCustomAttributes(config, appId, csvFilePath) {
@@ -254,7 +539,7 @@ async function processCustomAttributes(config, appId, csvFilePath) {
 
   if (columns.length === 0) {
     console.log('   ℹ No columns to process (all columns start with "ent_")');
-    return;
+    return []; // Return empty array for mapping
   }
 
   // Get existing schema
@@ -287,7 +572,7 @@ async function processCustomAttributes(config, appId, csvFilePath) {
   if (attributesToCreate.length === 0) {
     console.log('   ✓ All required attributes already exist');
     console.log('   → No new attributes need to be created');
-    return;
+    return columns; // Return all columns for mapping
   }
 
   console.log(`   → Creating ${attributesToCreate.length} new custom attribute(s)...`);
@@ -295,6 +580,7 @@ async function processCustomAttributes(config, appId, csvFilePath) {
 
   let successCount = 0;
   let failureCount = 0;
+  const successfullyCreated = [];
 
   for (const attributeName of attributesToCreate) {
     try {
@@ -303,6 +589,7 @@ async function processCustomAttributes(config, appId, csvFilePath) {
       await createCustomAttribute(config, appId, attributeName);
       console.log(`     ✓ Successfully created`);
       successCount++;
+      successfullyCreated.push(attributeName);
     } catch (error) {
       console.error(`     ✗ Failed: ${error.message}`);
       failureCount++;
@@ -318,6 +605,9 @@ async function processCustomAttributes(config, appId, csvFilePath) {
   if (failureCount > 0) {
     console.log(`     • Failed to create: ${failureCount}`);
   }
+
+  // Return all columns (both newly created and already existing) for mapping
+  return columns;
 }
 
 async function main() {
@@ -428,7 +718,12 @@ async function main() {
     console.log('🏷️  STEP 4: Custom Attribute Management');
     console.log('   → Reading CSV column headers...');
     console.log('   → Filtering out enterprise columns (starting with "ent_")...');
-    await processCustomAttributes(config, app.id, selectedCsvFile);
+    const attributes = await processCustomAttributes(config, app.id, selectedCsvFile);
+
+    // Process attribute mappings to Okta user profile
+    if (attributes && attributes.length > 0) {
+      await processAttributeMappings(config, app.id, attributes);
+    }
 
     console.log('');
     console.log('='.repeat(70));
@@ -440,6 +735,7 @@ async function main() {
     console.log(`   2. Navigate to Applications → ${appName}`);
     console.log('   3. Configure SAML settings (SSO URLs, Audience, etc.)');
     console.log('   4. Review custom attributes under Provisioning → To App');
+    console.log('   5. Verify profile mappings under Provisioning → To Okta');
     console.log('');
 
   } catch (error) {
