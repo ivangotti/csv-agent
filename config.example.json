@@ -1,0 +1,5 @@
+{
+  "oktaDomain": "your-tenant.okta.com",
+  "apiToken": "your-api-token-here",
+  "selectedCsvFile": "My Application.csv"
+}
