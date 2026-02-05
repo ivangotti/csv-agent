@@ -1,0 +1,20 @@
+{
+  "name": "csv-agent",
+  "version": "1.0.0",
+  "description": "Node.js application to automate SAML 2.0 application creation and custom attribute management in Okta based on CSV files",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "keywords": ["okta", "api"],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@okta/okta-sdk-nodejs": "^7.1.0",
+    "csv-parse": "^5.5.6",
+    "dotenv": "^16.4.5",
+    "readline": "^1.3.0"
+  }
+}
