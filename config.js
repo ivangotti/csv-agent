@@ -205,6 +205,9 @@ export async function getAccessTokenDeviceFlow(config) {
   try {
     // Step 1: Request device code
     console.log('   → Requesting device authorization code...');
+    console.log(`   → Device auth URL: ${deviceAuthUrl}`);
+    console.log(`   → Client ID: ${config.clientId}`);
+    console.log(`   → Requesting scopes: ${scopes.join(' ')}`);
 
     const deviceResponse = await fetch(deviceAuthUrl, {
       method: 'POST',
