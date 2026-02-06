@@ -328,8 +328,9 @@ async function createEntitlement(config, resourceId, entitlementData) {
     // Use SSWS token for governance endpoints if available
     const authHeader = config.apiToken ? `SSWS ${config.apiToken}` : await getAuthHeader(config);
 
+    // Use top-level entitlements endpoint (not under resources)
     const response = await fetch(
-      `https://${config.oktaDomain}/governance/api/v1/resources/${resourceId}/entitlements`,
+      `https://${config.oktaDomain}/governance/api/v1/entitlements`,
       {
         method: 'POST',
         headers: {
@@ -510,43 +511,55 @@ async function processEntitlements(config, appId, csvFilePath, existingResourceI
   let skipped = 0;
   let failed = 0;
 
+  // Create ONE entitlement per column (attribute) with all values
   for (const [column, values] of Object.entries(catalog)) {
     const attributeName = column.substring(4); // Remove 'ent_' prefix
-    console.log(`   → Processing ${attributeName} entitlements:`);
+    console.log(`   → Creating ${attributeName} entitlement with ${values.length} value(s):`);
 
-    for (const value of values) {
-      try {
-        // Check if entitlement already exists
-        const exists = existingEntitlements.some(ent =>
-          ent.name && ent.name.toLowerCase() === value.toLowerCase()
-        );
+    try {
+      // Check if entitlement already exists
+      const exists = existingEntitlements.some(ent =>
+        ent.name && ent.name.toLowerCase() === attributeName.toLowerCase()
+      );
 
-        if (exists) {
-          console.log(`     • ${value} (already exists)`);
-          skipped++;
-          continue;
-        }
-
-        // Create entitlement
-        const entitlementData = {
-          name: value,
-          attribute: attributeName,
-          value: JSON.stringify({ name: value })
-        };
-
-        await createEntitlement(config, resourceId, entitlementData);
-        console.log(`     ✓ ${value} (created)`);
-        created++;
-      } catch (error) {
-        console.log(`     ✗ ${value} (failed: ${error.message})`);
-        failed++;
+      if (exists) {
+        console.log(`     ⊘ ${attributeName} entitlement already exists (skipped)`);
+        skipped++;
+        console.log('');
+        continue;
       }
+
+      // Build entitlement data in correct API format
+      const entitlementData = {
+        name: attributeName,
+        externalValue: attributeName,
+        description: `${attributeName} entitlement from CSV`,
+        parent: {
+          externalId: appId,
+          type: 'APPLICATION'
+        },
+        multiValue: true,
+        dataType: 'string',
+        values: values.map(value => ({
+          name: value,
+          description: value,
+          externalValue: value
+        }))
+      };
+
+      console.log(`     → Values: ${values.join(', ')}`);
+      await createEntitlement(config, resourceId, entitlementData);
+      console.log(`     ✓ ${attributeName} entitlement created with ${values.length} value(s)`);
+      created++;
+    } catch (error) {
+      console.log(`     ✗ ${attributeName} failed: ${error.message}`);
+      failed++;
     }
     console.log('');
   }
 
   console.log('   📊 Entitlement Creation Summary:');
-  console.log(`     • Total unique entitlements: ${totalEntitlements}`);
+  console.log(`     • Total entitlement columns: ${Object.keys(catalog).length}`);
   console.log(`     • Successfully created: ${created}`);
   console.log(`     • Already existed: ${skipped}`);
   if (failed > 0) {
