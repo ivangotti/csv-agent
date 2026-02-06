@@ -147,28 +147,66 @@ Created apps use placeholder values that need manual configuration:
 
 ### Governance & Entitlement Management
 
-**Manual Setup Required:**
-Okta Governance APIs for resource registration and entitlement management may return 405 (Method Not Allowed) if:
-- Okta Identity Governance (OIG) license is not available
-- Governance features are not enabled for the organization
-- The app has not been manually added to Identity Governance → Resources
+**Automatic Opt-In (API-Based):**
+The application automatically enables entitlement management using the opt-in endpoint:
+- **Endpoint**: `POST /api/v1/governance/resources/source/{appId}/optIn`
+- **Authentication**: Requires SSWS API token (not OAuth)
+- **Payload**: `{name: "orgname_appname", rampResourceType: "OKTA_APP"}`
+- **Resource Naming**: Format is `{orgname}_{appname}` (lowercase, alphanumeric only)
+- **Success**: Returns governance resource ID for use with entitlement APIs
 
-**Manual Steps:**
-1. Login to Okta Admin Console
-2. Navigate to Identity Governance → Resources
-3. Click "Add application" and select the newly created SAML app
-4. Enable "Entitlement Management" for the application
-5. Re-run the CSV Agent - it will now detect the governance resource and create entitlements
+**Current Limitations:**
+After successful opt-in, the entitlement CRUD endpoints return HTTP 405 (Method Not Allowed):
+- `GET /governance/api/v1/resources/{resourceId}/entitlements` - Cannot fetch existing entitlements
+- `POST /governance/api/v1/resources/{resourceId}/entitlements` - Cannot create entitlements via API
 
-**Once Enabled:**
-- The app automatically detects the governance resource ID
-- Entitlements are created via POST to `/governance/api/v1/resources/{resourceId}/entitlements`
-- Duplicate checking prevents re-creating existing entitlements
-- Each entitlement includes: name, attribute (from column name), value (JSON)
+This suggests entitlements must be created through:
+1. Okta Admin Console UI (Identity Governance → Resources → Application → Entitlements)
+2. A different API version/endpoint (not yet discovered)
+3. Or there may be a delay after opt-in before endpoints become available
+
+**Entitlement Catalog Generation:**
+The application generates a complete entitlement catalog from CSV columns with `ent_` prefix:
+- Parses all unique values from entitlement columns
+- Handles comma-separated values within cells
+- Displays catalog for manual import if API creation fails
+- Format: `{attribute: "columnName", name: "value", value: {"value": "value"}}`
+
+**What Works:**
+- ✅ Opt-in endpoint successfully enables entitlement management
+- ✅ Governance resource ID is obtained and tracked
+- ✅ Entitlement catalog is generated from CSV
+- ❌ Entitlement creation via API returns 405
+
+**Manual Workaround:**
+1. Run the CSV Agent - it will opt-in and display the entitlement catalog
+2. Login to Okta Admin Console
+3. Navigate to Identity Governance → Resources → [Your App]
+4. Manually create entitlements from the displayed catalog
+5. Or import entitlements if bulk import feature is available
 
 ### Security
 
 - config.json contains sensitive credentials and is gitignored
-- Never commit API tokens or configuration files
-- API token needs application management permissions
-- API token may also need Okta Identity Governance (OIG) permissions for entitlement creation
+- Never commit API tokens, OAuth secrets, or private keys
+- Private key files (*.pem) are gitignored for security
+
+**Authentication Methods Supported:**
+1. **OAuth Client Credentials with private_key_jwt** (Recommended):
+   - Requires API Services OAuth app
+   - Uses RSA private/public key pair
+   - Private key stored in `private-key.pem` (gitignored)
+   - OAuth app must have Super Admin role assigned
+   - OAuth app must be granted necessary Okta API scopes
+   - Public key must be registered in OAuth app settings
+
+2. **SSWS API Token** (Legacy/Hybrid):
+   - Required for governance opt-in endpoint
+   - Can be used as fallback for Management APIs
+   - Stored in `config.json` as `apiToken`
+   - When both OAuth and SSWS are configured, governance endpoints use SSWS
+
+**Required Permissions:**
+- OAuth app needs: `okta.apps.manage`, `okta.apps.read`, `okta.users.manage`, `okta.users.read`, `okta.schemas.manage`, `okta.schemas.read`, `okta.profileMappings.manage`, `okta.profileMappings.read`, `okta.governance.*`
+- OAuth app must be assigned Super Administrator role (or equivalent)
+- SSWS token needs full admin permissions for governance APIs

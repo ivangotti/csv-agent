@@ -19,11 +19,11 @@ async function getAuthHeader(config) {
       if (config.authFlow === 'device') {
         // Device flow - user authenticates in browser
         cachedAccessToken = await getAccessTokenDeviceFlow(config);
-      } else if (config.clientSecret) {
-        // Client credentials flow
+      } else if (config.clientSecret || config.privateKey || config.privateKeyPath) {
+        // Client credentials flow (with client_secret or private_key_jwt)
         cachedAccessToken = await getAccessToken(config);
       } else {
-        throw new Error('OAuth configuration incomplete: missing authFlow or clientSecret');
+        throw new Error('OAuth configuration incomplete: missing authentication credentials (clientSecret, privateKey, or privateKeyPath)');
       }
     }
     return `Bearer ${cachedAccessToken}`;
@@ -244,34 +244,48 @@ function generateEntitlementCatalog(csvFilePath) {
 /**
  * Register app as a governance resource
  */
-async function registerGovernanceResource(config, appId) {
+async function registerGovernanceResource(config, appId, appName) {
   try {
-    // First try to register the app as a resource
-    const response = await fetch(
-      `https://${config.oktaDomain}/governance/api/v1/resources`,
-      {
-        method: 'POST',
-        headers: {
-          'Authorization': await getAuthHeader(config),
-          'Accept': 'application/json',
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          source: {
-            id: appId
-          }
-        })
-      }
-    );
+    // Extract org name from domain (e.g., "idmotors" from "idmotors.okta.com")
+    const orgName = config.oktaDomain.split('.')[0];
+
+    // Format the resource name: orgname_appname (lowercase, no spaces)
+    const formattedAppName = appName.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const resourceName = `${orgName}_${formattedAppName}`;
+
+    console.log(`   → Resource name: ${resourceName}`);
+
+    // Use the opt-in endpoint to enable entitlement management
+    const optInUrl = `https://${config.oktaDomain}/api/v1/governance/resources/source/${appId}/optIn`;
+    console.log(`   → API Call: POST ${optInUrl}`);
+
+    // Use SSWS token for governance opt-in endpoint (testing)
+    const authHeader = config.apiToken ? `SSWS ${config.apiToken}` : await getAuthHeader(config);
+    console.log(`   → Using ${config.apiToken ? 'SSWS' : 'OAuth'} authentication`);
+
+    const response = await fetch(optInUrl, {
+      method: 'POST',
+      headers: {
+        'Authorization': authHeader,
+        'Accept': 'application/json',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        name: resourceName,
+        rampResourceType: 'OKTA_APP'
+      })
+    });
 
     if (!response.ok) {
       const errorBody = await response.text();
       throw new Error(`HTTP ${response.status}: ${errorBody}`);
     }
 
-    return await response.json();
+    const result = await response.json();
+    console.log(`   ✓ Entitlement management enabled successfully`);
+    return result;
   } catch (error) {
-    throw new Error(`Error registering governance resource: ${error.message}`);
+    throw new Error(`Error enabling entitlement management: ${error.message}`);
   }
 }
 
@@ -311,12 +325,15 @@ async function enableEntitlementManagement(config, resourceId) {
  */
 async function createEntitlement(config, resourceId, entitlementData) {
   try {
+    // Use SSWS token for governance endpoints if available
+    const authHeader = config.apiToken ? `SSWS ${config.apiToken}` : await getAuthHeader(config);
+
     const response = await fetch(
       `https://${config.oktaDomain}/governance/api/v1/resources/${resourceId}/entitlements`,
       {
         method: 'POST',
         headers: {
-          'Authorization': await getAuthHeader(config),
+          'Authorization': authHeader,
           'Accept': 'application/json',
           'Content-Type': 'application/json'
         },
@@ -372,18 +389,25 @@ async function getGovernanceResourceId(config, appId) {
  */
 async function getAppEntitlements(config, resourceId) {
   try {
+    // Use SSWS token for governance endpoints if available
+    const authHeader = config.apiToken ? `SSWS ${config.apiToken}` : await getAuthHeader(config);
+
     const response = await fetch(
       `https://${config.oktaDomain}/governance/api/v1/resources/${resourceId}/entitlements`,
       {
         headers: {
-          'Authorization': await getAuthHeader(config),
+          'Authorization': authHeader,
           'Accept': 'application/json'
         }
       }
     );
 
-    if (response.status === 404 || response.status === 405) {
-      return null;
+    if (response.status === 404) {
+      throw new Error(`HTTP 404: Entitlements endpoint not found for resource ${resourceId}`);
+    }
+
+    if (response.status === 405) {
+      throw new Error(`HTTP 405: Method not allowed - entitlements endpoint may not be enabled`);
     }
 
     if (!response.ok) {
@@ -393,18 +417,14 @@ async function getAppEntitlements(config, resourceId) {
 
     return await response.json();
   } catch (error) {
-    // If governance API is not available, return null
-    if (error.message.includes('404') || error.message.includes('405') || error.message.includes('not found')) {
-      return null;
-    }
-    throw new Error(`Error fetching entitlements: ${error.message}`);
+    throw error;
   }
 }
 
 /**
  * Process entitlement catalog and create entitlements in Okta
  */
-async function processEntitlements(config, appId, csvFilePath) {
+async function processEntitlements(config, appId, csvFilePath, existingResourceId = null) {
   console.log('📦 STEP 7: Entitlement Catalog & Creation');
   console.log('   → Parsing CSV file for entitlement columns (ent_*)...');
 
@@ -427,11 +447,16 @@ async function processEntitlements(config, appId, csvFilePath) {
   console.log(`   → Total unique entitlements to create: ${totalEntitlements}`);
   console.log('');
 
-  // Get governance resource ID for the app
-  console.log('   → Fetching governance resource ID for app...');
-  console.log(`   → API Call: GET /governance/api/v1/resources?filter=source.id eq "${appId}"`);
+  // Use existing resource ID if provided, otherwise fetch it
+  let resourceId = existingResourceId;
 
-  const resourceId = await getGovernanceResourceId(config, appId);
+  if (!resourceId) {
+    console.log('   → Fetching governance resource ID for app...');
+    console.log(`   → API Call: GET /governance/api/v1/resources?filter=source.id eq "${appId}"`);
+    resourceId = await getGovernanceResourceId(config, appId);
+  } else {
+    console.log(`   → Using governance resource ID from Step 4: ${resourceId}`);
+  }
 
   if (!resourceId) {
     console.log('   ⚠ Could not find governance resource for this app');
@@ -454,12 +479,24 @@ async function processEntitlements(config, appId, csvFilePath) {
   console.log('   → Fetching existing entitlements...');
   console.log(`   → API Call: GET /governance/api/v1/resources/${resourceId}/entitlements`);
 
-  const existingEntitlements = await getAppEntitlements(config, resourceId);
+  let existingEntitlements = [];
+  try {
+    existingEntitlements = await getAppEntitlements(config, resourceId);
+  } catch (error) {
+    if (error.message.includes('405')) {
+      console.log(`   ⚠ Cannot fetch existing entitlements (HTTP 405)`);
+      console.log('   → Assuming no existing entitlements, will attempt to create all');
+      console.log('');
+      // Continue with empty array - we'll try to create all entitlements
+    } else {
+      console.log(`   ⚠ Could not fetch entitlements from governance API: ${error.message}`);
+      console.log('');
+      return;
+    }
+  }
 
   if (existingEntitlements === null) {
-    console.log('   ⚠ Could not fetch entitlements from governance API');
-    console.log('');
-    return;
+    existingEntitlements = [];
   }
 
   console.log(`   ✓ Found ${existingEntitlements.length} existing entitlements`);
@@ -1088,15 +1125,14 @@ async function main() {
     governanceResourceId = await getGovernanceResourceId(config, app.id);
 
     if (!governanceResourceId) {
-      // Try to register the app as a governance resource
-      console.log('   → App not registered in Governance, registering now...');
-      console.log(`   → API Call: POST /governance/api/v1/resources`);
+      // Try to opt-in the app to governance / enable entitlement management
+      console.log('   → App not registered in Governance, enabling entitlement management...');
       try {
-        const resource = await registerGovernanceResource(config, app.id);
+        const resource = await registerGovernanceResource(config, app.id, app.label);
         governanceResourceId = resource.id;
-        console.log(`   ✓ App registered as governance resource: ${governanceResourceId}`);
+        console.log(`   ✓ Governance resource ID: ${governanceResourceId}`);
       } catch (error) {
-        console.log(`   ⚠ Could not register governance resource: ${error.message}`);
+        console.log(`   ⚠ Could not enable entitlement management: ${error.message}`);
         console.log('   → This feature requires Okta Identity Governance (OIG) license');
         console.log('   → Entitlements may need to be enabled manually in Admin Console');
         console.log('');
@@ -1132,7 +1168,7 @@ async function main() {
     }
 
     // Process entitlements from CSV
-    await processEntitlements(config, app.id, selectedCsvFile);
+    await processEntitlements(config, app.id, selectedCsvFile, governanceResourceId);
 
     console.log('');
     console.log('='.repeat(70));
