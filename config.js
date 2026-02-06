@@ -1,6 +1,7 @@
 import fs from 'fs';
 import readline from 'readline';
 import { promisify } from 'util';
+import * as jose from 'jose';
 
 const CONFIG_FILE = './config.json';
 
@@ -320,6 +321,45 @@ export async function getAccessTokenDeviceFlow(config) {
 }
 
 /**
+ * Generate client assertion JWT for private_key_jwt authentication
+ */
+async function generateClientAssertion(config, tokenUrl) {
+  // Read private key from file or use inline key
+  let privateKeyPem;
+
+  if (config.privateKeyPath) {
+    privateKeyPem = await fs.promises.readFile(config.privateKeyPath, 'utf8');
+  } else if (config.privateKey) {
+    privateKeyPem = config.privateKey;
+  } else {
+    throw new Error('Private key not found in configuration. Provide either privateKeyPath or privateKey.');
+  }
+
+  // Import the private key
+  const privateKey = await jose.importPKCS8(privateKeyPem, 'RS256');
+
+  // Create JWT claims
+  const now = Math.floor(Date.now() / 1000);
+  const claims = {
+    iss: config.clientId,
+    sub: config.clientId,
+    aud: tokenUrl,
+    exp: now + 300, // 5 minutes expiration
+    iat: now,
+    jti: `${config.clientId}-${now}-${Math.random().toString(36).substring(2)}`
+  };
+
+  // Sign the JWT
+  const jwt = await new jose.SignJWT(claims)
+    .setProtectedHeader({ alg: 'RS256' })
+    .setIssuedAt(now)
+    .setExpirationTime(now + 300)
+    .sign(privateKey);
+
+  return jwt;
+}
+
+/**
  * Get OAuth access token using client credentials flow
  */
 export async function getAccessToken(config) {
@@ -328,24 +368,55 @@ export async function getAccessToken(config) {
   // all scopes that were granted to this client in the Admin Console
   const tokenUrl = `https://${config.oktaDomain}/oauth2/v1/token`;
 
-  // Encode client credentials for Basic Auth
-  const credentials = Buffer.from(`${config.clientId}:${config.clientSecret}`).toString('base64');
-
   try {
     console.log(`   → Requesting OAuth token from: ${tokenUrl}`);
     console.log(`   → Client ID: ${config.clientId}`);
 
-    const response = await fetch(tokenUrl, {
-      method: 'POST',
-      headers: {
+    // Check which authentication method to use
+    const usePrivateKeyJwt = config.privateKey || config.privateKeyPath;
+
+    let headers;
+    let bodyParams;
+
+    if (usePrivateKeyJwt) {
+      // Use private_key_jwt authentication
+      console.log(`   → Authentication method: private_key_jwt`);
+      const clientAssertion = await generateClientAssertion(config, tokenUrl);
+
+      headers = {
+        'Accept': 'application/json',
+        'Content-Type': 'application/x-www-form-urlencoded'
+      };
+
+      bodyParams = {
+        grant_type: 'client_credentials',
+        client_assertion_type: 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer',
+        client_assertion: clientAssertion,
+        scope: 'okta.apps.manage okta.apps.read okta.users.manage okta.users.read okta.schemas.manage okta.schemas.read okta.profileMappings.manage okta.profileMappings.read okta.governance.accessCertifications.manage okta.governance.accessRequests.manage'
+      };
+    } else if (config.clientSecret) {
+      // Use client_secret_basic authentication
+      console.log(`   → Authentication method: client_secret_basic`);
+      const credentials = Buffer.from(`${config.clientId}:${config.clientSecret}`).toString('base64');
+
+      headers = {
         'Authorization': `Basic ${credentials}`,
         'Accept': 'application/json',
         'Content-Type': 'application/x-www-form-urlencoded'
-      },
-      body: new URLSearchParams({
-        grant_type: 'client_credentials'
-        // Note: No scope parameter - uses pre-granted scopes from Admin Console
-      })
+      };
+
+      bodyParams = {
+        grant_type: 'client_credentials',
+        scope: 'okta.apps.manage okta.apps.read okta.users.manage okta.users.read okta.schemas.manage okta.schemas.read okta.profileMappings.manage okta.profileMappings.read okta.governance.accessCertifications.manage okta.governance.accessRequests.manage'
+      };
+    } else {
+      throw new Error('No authentication credentials found. Provide either privateKey/privateKeyPath or clientSecret.');
+    }
+
+    const response = await fetch(tokenUrl, {
+      method: 'POST',
+      headers: headers,
+      body: new URLSearchParams(bodyParams)
     });
 
     if (!response.ok) {
