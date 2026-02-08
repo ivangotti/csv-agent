@@ -499,12 +499,13 @@ async function processEntitlements(config, appId, csvFilePath, existingResourceI
       console.log(`   ⚠ Cannot fetch existing entitlements (HTTP 405)`);
       console.log('   → Assuming no existing entitlements, will attempt to create all');
       console.log('');
-      // Continue with empty array - we'll try to create all entitlements
     } else {
       console.log(`   ⚠ Could not fetch entitlements from governance API: ${error.message}`);
+      console.log('   → Proceeding to create entitlements');
       console.log('');
-      return;
     }
+    // Continue with empty array - we'll try to create all entitlements
+    existingEntitlements = [];
   }
 
   if (existingEntitlements === null) {
@@ -521,6 +522,7 @@ async function processEntitlements(config, appId, csvFilePath, existingResourceI
   let created = 0;
   let skipped = 0;
   let failed = 0;
+  const createdEntitlements = {}; // Track created entitlements for later use
 
   // Create ONE entitlement per column (attribute) with all values
   for (const [column, values] of Object.entries(catalog)) {
@@ -529,12 +531,14 @@ async function processEntitlements(config, appId, csvFilePath, existingResourceI
 
     try {
       // Check if entitlement already exists
-      const exists = existingEntitlements.some(ent =>
+      const existingEnt = existingEntitlements.find(ent =>
         ent.name && ent.name.toLowerCase() === attributeName.toLowerCase()
       );
 
-      if (exists) {
+      if (existingEnt) {
         console.log(`     ⊘ ${attributeName} entitlement already exists (skipped)`);
+        // Store existing entitlement for later use
+        createdEntitlements[attributeName.toLowerCase()] = existingEnt;
         skipped++;
         console.log('');
         continue;
@@ -559,8 +563,13 @@ async function processEntitlements(config, appId, csvFilePath, existingResourceI
       };
 
       console.log(`     → Values: ${values.join(', ')}`);
-      await createEntitlement(config, resourceId, entitlementData);
+      const newEntitlement = await createEntitlement(config, resourceId, entitlementData);
       console.log(`     ✓ ${attributeName} entitlement created with ${values.length} value(s)`);
+
+      // Store the created entitlement for later use
+      if (newEntitlement && newEntitlement.id) {
+        createdEntitlements[attributeName.toLowerCase()] = newEntitlement;
+      }
       created++;
     } catch (error) {
       console.log(`     ✗ ${attributeName} failed: ${error.message}`);
@@ -577,6 +586,9 @@ async function processEntitlements(config, appId, csvFilePath, existingResourceI
     console.log(`     • Failed: ${failed}`);
   }
   console.log('');
+
+  // Return the entitlements map for use in user provisioning
+  return createdEntitlements;
 }
 
 /**
@@ -703,15 +715,27 @@ async function assignUserToApp(config, appId, userId, profileData) {
 }
 
 /**
- * Assign entitlements to a user for a specific app
+ * Assign a single entitlement grant to a user
+ * Uses the Grants API which is the proper way to assign entitlements
  */
-async function assignUserEntitlements(config, resourceId, userId, entitlements) {
+async function createEntitlementGrant(config, resourceId, userId, entitlementId, entitlementValueId = null) {
   try {
     // Use SSWS token for governance endpoints if available
     const authHeader = config.apiToken ? `SSWS ${config.apiToken}` : await getAuthHeader(config);
 
+    const grantData = {
+      principalId: userId,
+      resourceId: resourceId,
+      entitlementId: entitlementId
+    };
+
+    // Add entitlement value ID for multiValue entitlements
+    if (entitlementValueId) {
+      grantData.entitlementValueId = entitlementValueId;
+    }
+
     const response = await fetch(
-      `https://${config.oktaDomain}/governance/api/v1/resources/${resourceId}/users/${userId}/entitlements`,
+      `https://${config.oktaDomain}/governance/api/v1/grants`,
       {
         method: 'POST',
         headers: {
@@ -719,7 +743,7 @@ async function assignUserEntitlements(config, resourceId, userId, entitlements) 
           'Accept': 'application/json',
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ entitlements })
+        body: JSON.stringify(grantData)
       }
     );
 
@@ -737,7 +761,7 @@ async function assignUserEntitlements(config, resourceId, userId, entitlements) 
 /**
  * Process users from CSV - create/update users and assign to app
  */
-async function processUsers(config, appId, csvFilePath, resourceId = null) {
+async function processUsers(config, appId, csvFilePath, resourceId = null, entitlementsMap = {}) {
   console.log('👥 STEP 8: User Provisioning');
   console.log('   → Reading user data from CSV...');
 
@@ -752,28 +776,14 @@ async function processUsers(config, appId, csvFilePath, resourceId = null) {
     console.log(`   ✓ Found ${records.length} user(s) in CSV`);
     console.log('');
 
-    // Get existing entitlements if resourceId is provided
-    let entitlementsMap = new Map(); // Map of entitlement name to entitlement object
-    if (resourceId) {
-      try {
-        console.log('   → Fetching entitlements for assignment...');
-        const entitlements = await getAppEntitlements(config, resourceId, appId);
-
-        // Build a map of entitlement name -> entitlement data
-        if (Array.isArray(entitlements)) {
-          for (const ent of entitlements) {
-            if (ent.name) {
-              entitlementsMap.set(ent.name.toLowerCase(), ent);
-            }
-          }
-          console.log(`   ✓ Loaded ${entitlementsMap.size} entitlement(s) for assignment`);
-        }
-        console.log('');
-      } catch (error) {
-        console.log(`   ⚠ Could not fetch entitlements: ${error.message}`);
-        console.log('   → Users will be assigned to app without entitlements');
-        console.log('');
-      }
+    // Use the entitlements map passed from processEntitlements
+    if (resourceId && Object.keys(entitlementsMap).length > 0) {
+      console.log(`   ✓ Using ${Object.keys(entitlementsMap).length} entitlement(s) from Step 7`);
+      console.log('');
+    } else if (resourceId) {
+      console.log(`   ⚠ No entitlements available for assignment`);
+      console.log('   → Users will be assigned to app without entitlements');
+      console.log('');
     }
 
     let created = 0;
@@ -848,14 +858,14 @@ async function processUsers(config, appId, csvFilePath, resourceId = null) {
         assigned++;
 
         // Assign entitlements from ent_* columns
-        if (resourceId && entitlementsMap.size > 0) {
+        if (resourceId && Object.keys(entitlementsMap).length > 0) {
           const userEntitlements = [];
 
           // Parse ent_* columns for this user
           for (const [key, value] of Object.entries(record)) {
             if (key.startsWith('ent_') && value) {
               const entitlementName = key.substring(4); // Remove 'ent_' prefix
-              const entitlement = entitlementsMap.get(entitlementName.toLowerCase());
+              const entitlement = entitlementsMap[entitlementName.toLowerCase()];
 
               if (entitlement && entitlement.id) {
                 // Split comma-separated values
@@ -881,13 +891,30 @@ async function processUsers(config, appId, csvFilePath, resourceId = null) {
             }
           }
 
-          // Assign entitlements if any were found
+          // Create grants for each entitlement if any were found
           if (userEntitlements.length > 0) {
             try {
-              console.log(`     → Assigning ${userEntitlements.length} entitlement(s)...`);
-              await assignUserEntitlements(config, resourceId, userId, userEntitlements);
-              console.log(`     ✓ Entitlements assigned`);
-              entitlementsAssigned++;
+              console.log(`     → Creating ${userEntitlements.length} entitlement grant(s)...`);
+              let grantsFailed = 0;
+              let grantsCreated = 0;
+
+              for (const ent of userEntitlements) {
+                try {
+                  await createEntitlementGrant(config, resourceId, userId, ent.entitlementId, ent.valueId);
+                  grantsCreated++;
+                } catch (grantError) {
+                  grantsFailed++;
+                  // Continue with other grants even if one fails
+                }
+              }
+
+              if (grantsCreated > 0) {
+                console.log(`     ✓ ${grantsCreated} entitlement grant(s) created`);
+                entitlementsAssigned++;
+              }
+              if (grantsFailed > 0) {
+                console.log(`     ⚠ ${grantsFailed} grant(s) failed`);
+              }
             } catch (error) {
               console.log(`     ⚠ Entitlement assignment failed: ${error.message}`);
               // Don't fail the whole user - they're still assigned to the app
@@ -1556,10 +1583,10 @@ async function main() {
     }
 
     // Process entitlements from CSV
-    await processEntitlements(config, app.id, selectedCsvFile, governanceResourceId);
+    const entitlementsMap = await processEntitlements(config, app.id, selectedCsvFile, governanceResourceId);
 
     // Process users from CSV - create/update and assign to app with entitlements
-    await processUsers(config, app.id, selectedCsvFile, governanceResourceId);
+    await processUsers(config, app.id, selectedCsvFile, governanceResourceId, entitlementsMap);
 
     console.log('');
     console.log('='.repeat(70));
