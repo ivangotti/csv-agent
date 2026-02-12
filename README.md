@@ -117,12 +117,14 @@ Some governance APIs require SSWS tokens. You can configure both:
 | `clientId` | Yes* | OAuth application Client ID |
 | `clientSecret` | No | OAuth client secret (for client_credentials flow) |
 | `privateKeyPath` | No | Path to private key PEM file (for private_key_jwt) |
-| `authFlow` | No | Set to `"device"` for interactive browser auth |
-| `apiToken` | No | SSWS API token (legacy, needed for some governance APIs) |
-| `selectedCsvFile` | No | Remembers your CSV file selection |
-| `syncInterval` | No | Enable sync mode - check for changes every N minutes |
+| `authFlow` | No | Set to `"device"` for interactive browser auth, or `"client_credentials"` (default) |
+| `apiToken` | No | SSWS API token (needed for some governance APIs) |
+| `selectedCsvFile` | No | Remembers your CSV file selection between runs |
+| `syncInterval` | No | Enable scheduled sync mode - interval in **minutes** (e.g., `5` = every 5 minutes) |
 
 *Required unless using SSWS token only (legacy)
+
+> **Note**: Copy `config.example.json` to `config.json` and fill in your values. The `config.json` file is gitignored to protect your credentials.
 
 ### Authentication Options
 
