@@ -1993,9 +1993,11 @@ async function syncUsers(config, appId, csvFilePath, resourceId, entitlementsMap
     }
 
     // Ensure all entitlement values from CSV exist (create new ones if needed)
+    let entitlementsCreated = 0;
     if (entitlementsMap && Object.keys(entitlementsMap).length > 0) {
       console.log('   → Checking for new entitlement values...');
       const newValues = await ensureEntitlementValues(config, appId, records, entitlementsMap);
+      entitlementsCreated = newValues.length;
       if (newValues.length > 0) {
         console.log(`   ✓ Created ${newValues.length} new entitlement value(s):`);
         for (const nv of newValues) {
@@ -2246,18 +2248,19 @@ async function syncUsers(config, appId, csvFilePath, resourceId, entitlementsMap
     console.log('   ' + '─'.repeat(50));
     console.log(`   📊 SYNC RESULTS [${syncTime}]`);
     console.log('   ' + '─'.repeat(50));
-    console.log(`     Users Added:    ${added}`);
-    console.log(`     Users Updated:  ${updated}`);
-    console.log(`     Users Removed:  ${removed}`);
+    console.log(`     Entitlements Created: ${entitlementsCreated}`);
+    console.log(`     Users Added:          ${added}`);
+    console.log(`     Users Updated:        ${updated}`);
+    console.log(`     Users Removed:        ${removed}`);
     if (failed > 0) {
-      console.log(`     Failed:         ${failed}`);
+      console.log(`     Failed:               ${failed}`);
     }
-    console.log(`     Total in Okta:  ${oktaAppUsers.length}`);
-    console.log(`     Total in CSV:   ${Object.keys(csvUsers).length}`);
+    console.log(`     Total in Okta:        ${oktaAppUsers.length}`);
+    console.log(`     Total in CSV:         ${Object.keys(csvUsers).length}`);
     console.log('   ' + '─'.repeat(50));
     console.log('');
 
-    return { added, updated, removed, failed };
+    return { added, updated, removed, failed, entitlementsCreated };
   } catch (error) {
     console.log(`   ✗ Sync error: ${error.message}`);
     console.log('');
