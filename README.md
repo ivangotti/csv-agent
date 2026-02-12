@@ -283,9 +283,9 @@ Grants are created using the Okta Governance API:
 }
 ```
 
-## Sync Mode
+## Scheduled Sync Mode
 
-The application supports **continuous sync mode** that periodically monitors the CSV file for changes and automatically synchronizes with Okta.
+The application supports **continuous sync mode** that keeps monitoring the CSV file for user or entitlement changes and automatically keeps everything in sync with Okta. The agent runs indefinitely, checking for changes at configurable intervals.
 
 ### Enable Sync Mode
 
@@ -299,25 +299,69 @@ Add `syncInterval` to your `config.json`:
 
 This will check for CSV changes every 5 minutes.
 
-### What Sync Mode Does
+### Key Features
+
+- **Continuous Monitoring**: Agent keeps running and checking for changes automatically
+- **Dynamic Entitlement Creation**: New entitlement values in CSV are automatically created in Okta
+- **User Lifecycle Management**: Handles adds, updates, and removals seamlessly
+- **Token Auto-Refresh**: OAuth tokens are automatically refreshed before expiration
+- **Rate Limit Handling**: Built-in retry logic for Okta API rate limits
+- **Verbose Results**: Detailed sync results after each cycle
+
+### What Sync Mode Detects & Handles
 
 | Change Type | Action |
 |-------------|--------|
-| **New user in CSV** | Create user, assign to app, grant entitlements |
+| **New user in CSV** | Create user in Okta, assign to app, grant entitlements |
 | **User removed from CSV** | Revoke entitlements, unassign from app |
 | **User attributes changed** | Update app user profile |
 | **User entitlements changed** | Revoke old grants, create new grants |
+| **New entitlement value in CSV** | Automatically create the new value in Okta, then assign to user |
 
-### Sync Output Example
+### Dynamic Entitlement Value Creation
+
+When a new entitlement value appears in the CSV that doesn't exist in Okta, the sync automatically:
+
+1. Detects the new value (e.g., a new role "Super Admin" added to a user)
+2. Creates the value in the existing entitlement in Okta
+3. Grants the new entitlement value to the user
 
 ```
-🔁 SYNC MODE ENABLED
-======================================================================
-   Checking for changes every 5 minute(s)
-   Press Ctrl+C to stop
+🔄 SYNC: Checking for changes...
+
+   → Checking for new entitlement values...
+   → New entitlement value detected: "Super Admin" for Permissions
+     ✓ Created: Super Admin (ent3abc123xyz)
+   ✓ Created 1 new entitlement value(s):
+     • permissions: "Super Admin"
+```
+
+### Sync Results Output
+
+After each sync cycle, detailed results are displayed:
+
+```
+──────────────────────────────────────────────────
+📊 SYNC RESULTS [3:45:32 PM]
+──────────────────────────────────────────────────
+  Entitlements Created: 1
+  Users Added:          2
+  Users Updated:        5
+  Users Removed:        1
+  Total in Okta:        102
+  Total in CSV:         103
+──────────────────────────────────────────────────
+```
+
+### Full Sync Cycle Example
+
+```
+⏰ [3:45:32 PM] Running scheduled sync...
 
 🔄 SYNC: Checking for changes...
 
+   → Checking for new entitlement values...
+   ✓ All entitlement values already exist
    → Fetching current users from Okta...
    ✓ Found 100 user(s) currently assigned to app
    ✓ CSV contains 102 user(s)
@@ -332,12 +376,22 @@ This will check for CSV changes every 5 minutes.
      ✓ newuser@example.com added with entitlements
 
    🔄 Checking for updates...
-     ✓ No profile updates needed
+     → Updating john.doe@example.com (changed: ent_Permissions)...
+     ✓ john.doe@example.com updated
+     ✓ Updated 1 user(s), 1 entitlement grant(s)
 
-   📊 Sync Summary:
-     • Added: 2
-     • Updated: 0
-     • Removed: 0
+   ──────────────────────────────────────────────────
+   📊 SYNC RESULTS [3:45:45 PM]
+   ──────────────────────────────────────────────────
+     Entitlements Created: 0
+     Users Added:          2
+     Users Updated:        1
+     Users Removed:        0
+     Total in Okta:        102
+     Total in CSV:         102
+   ──────────────────────────────────────────────────
+
+   Next sync in 5 minute(s)
 ```
 
 ### Running as a Service
@@ -350,7 +404,21 @@ nohup npm start > sync.log 2>&1 &
 
 # Or using pm2
 pm2 start index.js --name "okta-sync"
+
+# View logs
+pm2 logs okta-sync
+
+# Stop the service
+pm2 stop okta-sync
 ```
+
+### Token Auto-Refresh
+
+The sync mode automatically handles OAuth token expiration:
+
+- Tokens are refreshed 5 minutes before expiration
+- If a 401 error occurs, the token is automatically refreshed and the request retried
+- No manual intervention needed for long-running sync processes
 
 ## Example Output
 
