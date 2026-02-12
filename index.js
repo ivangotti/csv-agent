@@ -5,8 +5,9 @@ import fs from 'fs';
 import path from 'path';
 import { parse } from 'csv-parse/sync';
 
-// Global access token cache
+// Global access token cache with expiration tracking
 let cachedAccessToken = null;
+let tokenExpiresAt = null;
 
 /**
  * Generate a secure random password for new users
@@ -36,21 +37,51 @@ function generateSecurePassword() {
 }
 
 /**
+ * Check if the cached token is expired or about to expire
+ * Returns true if token needs refresh (expired or expires within 5 minutes)
+ */
+function isTokenExpired() {
+  if (!tokenExpiresAt) return true;
+  // Refresh if token expires within 5 minutes
+  const bufferMs = 5 * 60 * 1000;
+  return Date.now() >= (tokenExpiresAt - bufferMs);
+}
+
+/**
+ * Clear the cached token (used on 401 errors to force refresh)
+ */
+function clearCachedToken() {
+  cachedAccessToken = null;
+  tokenExpiresAt = null;
+}
+
+/**
  * Get authorization header for API calls
  * Supports Device Flow, Client Credentials, and SSWS token
+ * Automatically refreshes expired OAuth tokens
  */
-async function getAuthHeader(config) {
+async function getAuthHeader(config, forceRefresh = false) {
   if (config.clientId) {
-    // Use OAuth - get or reuse cached token
-    if (!cachedAccessToken) {
+    // Use OAuth - get or reuse cached token, refresh if expired
+    if (!cachedAccessToken || isTokenExpired() || forceRefresh) {
+      if (forceRefresh && cachedAccessToken) {
+        console.log('   → Token expired or invalid, refreshing...');
+      }
       if (config.authFlow === 'device') {
         // Device flow - user authenticates in browser
         cachedAccessToken = await getAccessTokenDeviceFlow(config);
+        // Device flow tokens typically last 1 hour
+        tokenExpiresAt = Date.now() + (60 * 60 * 1000);
       } else if (config.clientSecret || config.privateKey || config.privateKeyPath) {
         // Client credentials flow (with client_secret or private_key_jwt)
         cachedAccessToken = await getAccessToken(config);
+        // Client credentials tokens typically last 1 hour (3600 seconds)
+        tokenExpiresAt = Date.now() + (60 * 60 * 1000);
       } else {
         throw new Error('OAuth configuration incomplete: missing authentication credentials (clientSecret, privateKey, or privateKeyPath)');
+      }
+      if (forceRefresh) {
+        console.log('   ✓ Token refreshed successfully');
       }
     }
     return `Bearer ${cachedAccessToken}`;
@@ -413,53 +444,82 @@ async function getGovernanceResourceId(config, appId) {
  * Used when we need to get an existing entitlement that we couldn't create
  */
 async function getEntitlementByName(config, appId, entitlementName) {
-  try {
-    const authHeader = config.apiToken ? `SSWS ${config.apiToken}` : await getAuthHeader(config);
+  const maxRetries = 3;
 
-    // Try to filter by name and parent application
-    const filter = encodeURIComponent(`name eq "${entitlementName}" and parent.externalId eq "${appId}"`);
-    const response = await fetch(
-      `https://${config.oktaDomain}/governance/api/v1/entitlements?filter=${filter}`,
-      {
-        headers: {
-          'Authorization': authHeader,
-          'Accept': 'application/json'
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const authHeader = config.apiToken ? `SSWS ${config.apiToken}` : await getAuthHeader(config);
+
+      // Try to filter by name and parent application
+      const filter = encodeURIComponent(`name eq "${entitlementName}" and parent.externalId eq "${appId}"`);
+      const response = await fetch(
+        `https://${config.oktaDomain}/governance/api/v1/entitlements?filter=${filter}`,
+        {
+          headers: {
+            'Authorization': authHeader,
+            'Accept': 'application/json'
+          }
+        }
+      );
+
+      // Handle rate limiting
+      if (response.status === 429) {
+        if (attempt < maxRetries) {
+          await new Promise(resolve => setTimeout(resolve, 5000 * attempt));
+          continue;
         }
       }
-    );
 
-    if (response.ok) {
-      const result = await response.json();
-      if (Array.isArray(result) && result.length > 0) {
-        return result[0];
-      }
-    }
-
-    // If filter didn't work, try without filter and search manually
-    const allResponse = await fetch(
-      `https://${config.oktaDomain}/governance/api/v1/entitlements?limit=200`,
-      {
-        headers: {
-          'Authorization': authHeader,
-          'Accept': 'application/json'
+      if (response.ok) {
+        const result = await response.json();
+        if (Array.isArray(result) && result.length > 0) {
+          return result[0];
         }
       }
-    );
 
-    if (allResponse.ok) {
-      const allEntitlements = await allResponse.json();
-      if (Array.isArray(allEntitlements)) {
-        return allEntitlements.find(ent =>
-          ent.name && ent.name.toLowerCase() === entitlementName.toLowerCase() &&
-          ent.parent && ent.parent.externalId === appId
-        );
+      // If filter didn't work, try without filter and search manually
+      const allResponse = await fetch(
+        `https://${config.oktaDomain}/governance/api/v1/entitlements?limit=200`,
+        {
+          headers: {
+            'Authorization': authHeader,
+            'Accept': 'application/json'
+          }
+        }
+      );
+
+      // Handle rate limiting
+      if (allResponse.status === 429) {
+        if (attempt < maxRetries) {
+          await new Promise(resolve => setTimeout(resolve, 5000 * attempt));
+          continue;
+        }
+      }
+
+      if (allResponse.ok) {
+        const allEntitlements = await allResponse.json();
+        if (Array.isArray(allEntitlements)) {
+          const found = allEntitlements.find(ent =>
+            ent.name && ent.name.toLowerCase() === entitlementName.toLowerCase() &&
+            ent.parent && ent.parent.externalId === appId
+          );
+          if (found) return found;
+        }
+      }
+
+      // If we got here without finding it, wait and retry
+      if (attempt < maxRetries) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+    } catch (error) {
+      if (attempt < maxRetries) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        continue;
       }
     }
-
-    return null;
-  } catch (error) {
-    return null;
   }
+
+  return null;
 }
 
 /**
@@ -508,6 +568,77 @@ async function getAppEntitlements(config, resourceId, appId) {
     throw new Error(`Unable to fetch entitlements - tried multiple filter approaches`);
   } catch (error) {
     throw error;
+  }
+}
+
+/**
+ * Add a new value to an existing entitlement
+ * Used when sync detects a new entitlement value that doesn't exist yet
+ */
+async function addEntitlementValue(config, entitlementId, valueName, appId) {
+  try {
+    const authHeader = config.apiToken ? `SSWS ${config.apiToken}` : await getAuthHeader(config);
+
+    // First get the current entitlement to see its structure
+    const getResponse = await fetch(
+      `https://${config.oktaDomain}/governance/api/v1/entitlements/${entitlementId}`,
+      {
+        headers: {
+          'Authorization': authHeader,
+          'Accept': 'application/json'
+        }
+      }
+    );
+
+    if (!getResponse.ok) {
+      throw new Error(`Failed to get entitlement: HTTP ${getResponse.status}`);
+    }
+
+    const currentEntitlement = await getResponse.json();
+
+    // Add the new value to the existing values array
+    const existingValues = currentEntitlement.values || [];
+    const newValue = {
+      name: valueName,
+      description: valueName,
+      externalValue: valueName
+    };
+
+    // Update the entitlement with the new value added
+    const updatedEntitlement = {
+      ...currentEntitlement,
+      values: [...existingValues, newValue]
+    };
+
+    // PUT to update the entitlement
+    const updateResponse = await fetch(
+      `https://${config.oktaDomain}/governance/api/v1/entitlements/${entitlementId}`,
+      {
+        method: 'PUT',
+        headers: {
+          'Authorization': authHeader,
+          'Accept': 'application/json',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(updatedEntitlement)
+      }
+    );
+
+    if (!updateResponse.ok) {
+      const errorBody = await updateResponse.text();
+      throw new Error(`Failed to update entitlement: HTTP ${updateResponse.status}: ${errorBody}`);
+    }
+
+    const result = await updateResponse.json();
+
+    // Find and return the newly created value from the result
+    const createdValue = result.values?.find(v =>
+      v.name && v.name.toLowerCase() === valueName.toLowerCase()
+    );
+
+    return createdValue || null;
+  } catch (error) {
+    throw new Error(`Failed to add entitlement value "${valueName}": ${error.message}`);
   }
 }
 
@@ -1142,9 +1273,30 @@ async function processUsers(config, appId, csvFilePath, resourceId = null, entit
 
                 // Find matching value IDs
                 for (const val of csvValues) {
-                  const entValue = entitlement.values.find(
+                  let entValue = entitlement.values.find(
                     ev => ev.name && ev.name.toLowerCase() === val.toLowerCase()
                   );
+
+                  // If value doesn't exist, create it dynamically
+                  if (!entValue || !entValue.id) {
+                    try {
+                      console.log(`     → New entitlement value detected: "${val}" for ${entitlementName}`);
+                      console.log(`       Creating new value in Okta...`);
+                      const newValue = await addEntitlementValue(config, entitlement.id, val, appId);
+                      if (newValue && newValue.id) {
+                        console.log(`       ✓ Created new entitlement value: ${val} (${newValue.id})`);
+                        // Add to local cache so we don't try to create again
+                        entitlement.values.push(newValue);
+                        entValue = newValue;
+                      } else {
+                        console.log(`       ⚠ Could not create entitlement value: ${val}`);
+                        continue;
+                      }
+                    } catch (createError) {
+                      console.log(`       ⚠ Failed to create entitlement value: ${createError.message}`);
+                      continue;
+                    }
+                  }
 
                   if (entValue && entValue.id) {
                     // Group by entitlement ID
@@ -1705,6 +1857,62 @@ async function processCustomAttributes(config, appId, csvFilePath) {
 }
 
 /**
+ * Ensure all entitlement values from CSV exist in Okta
+ * Creates any missing values before user processing
+ */
+async function ensureEntitlementValues(config, appId, records, entitlementsMap) {
+  const newValuesCreated = [];
+
+  // Collect all unique values per entitlement from CSV
+  const valuesByEntitlement = {};
+
+  for (const record of records) {
+    for (const [key, value] of Object.entries(record)) {
+      if (key.startsWith('ent_') && value) {
+        const entitlementName = key.substring(4).toLowerCase();
+        const entitlement = entitlementsMap[entitlementName];
+
+        if (entitlement && entitlement.id) {
+          if (!valuesByEntitlement[entitlementName]) {
+            valuesByEntitlement[entitlementName] = new Set();
+          }
+          const csvValues = value.split(',').map(v => v.trim()).filter(v => v);
+          csvValues.forEach(v => valuesByEntitlement[entitlementName].add(v));
+        }
+      }
+    }
+  }
+
+  // Check for new values and create them
+  for (const [entitlementName, valuesSet] of Object.entries(valuesByEntitlement)) {
+    const entitlement = entitlementsMap[entitlementName];
+    if (!entitlement || !entitlement.values) continue;
+
+    for (const val of valuesSet) {
+      const exists = entitlement.values.some(
+        ev => ev.name && ev.name.toLowerCase() === val.toLowerCase()
+      );
+
+      if (!exists) {
+        try {
+          console.log(`   → New entitlement value detected: "${val}" for ${entitlementName}`);
+          const newValue = await addEntitlementValue(config, entitlement.id, val, appId);
+          if (newValue && newValue.id) {
+            console.log(`     ✓ Created: ${val} (${newValue.id})`);
+            entitlement.values.push(newValue);
+            newValuesCreated.push({ entitlement: entitlementName, value: val });
+          }
+        } catch (error) {
+          console.log(`     ⚠ Failed to create "${val}": ${error.message}`);
+        }
+      }
+    }
+  }
+
+  return newValuesCreated;
+}
+
+/**
  * Build entitlements array for a user from CSV record
  */
 function buildUserEntitlements(record, entitlementsMap) {
@@ -1784,9 +1992,39 @@ async function syncUsers(config, appId, csvFilePath, resourceId, entitlementsMap
       }
     }
 
-    // Get current Okta state
+    // Ensure all entitlement values from CSV exist (create new ones if needed)
+    if (entitlementsMap && Object.keys(entitlementsMap).length > 0) {
+      const newValues = await ensureEntitlementValues(config, appId, records, entitlementsMap);
+      if (newValues.length > 0) {
+        console.log(`   ✓ Created ${newValues.length} new entitlement value(s)`);
+        console.log('');
+      }
+    }
+
+    // Get current Okta state with retry on rate limit or token expiration
     console.log('   → Fetching current users from Okta...');
-    const oktaAppUsers = await getAppUsers(config, appId);
+    let oktaAppUsers = [];
+    let retries = 0;
+    while (retries < 3) {
+      try {
+        oktaAppUsers = await getAppUsers(config, appId);
+        break;
+      } catch (error) {
+        if (error.message.includes('401') && retries < 2) {
+          // Token expired - refresh and retry
+          retries++;
+          console.log(`   ⚠ Token expired, refreshing... (retry ${retries}/3)`);
+          clearCachedToken();
+          await getAuthHeader(config, true); // Force token refresh
+        } else if (error.message.includes('429') && retries < 2) {
+          retries++;
+          console.log(`   ⚠ Rate limited, waiting 10 seconds (retry ${retries}/3)...`);
+          await new Promise(resolve => setTimeout(resolve, 10000));
+        } else {
+          throw error;
+        }
+      }
+    }
     console.log(`   ✓ Found ${oktaAppUsers.length} user(s) currently assigned to app`);
     console.log(`   ✓ CSV contains ${Object.keys(csvUsers).length} user(s)`);
     console.log('');
@@ -1919,6 +2157,8 @@ async function syncUsers(config, appId, csvFilePath, resourceId, entitlementsMap
     if (toUpdate.length > 0) {
       console.log('   🔄 Checking for updates...');
       let updatesNeeded = 0;
+      let entitlementsUpdated = 0;
+      let checkedCount = 0;
 
       for (const { username, record, oktaUser } of toUpdate) {
         try {
@@ -1928,55 +2168,69 @@ async function syncUsers(config, appId, csvFilePath, resourceId, entitlementsMap
             if (value) expectedProfile[key] = value;
           }
 
-          // Compare with current profile
+          // Compare with current profile - check ALL fields for changes
           const currentProfile = oktaUser.profile || {};
           let profileChanged = false;
+          const changedFields = [];
 
           for (const [key, value] of Object.entries(expectedProfile)) {
             if (currentProfile[key] !== value) {
               profileChanged = true;
-              break;
+              changedFields.push(key);
             }
           }
 
+          // Only make API calls if something actually changed
           if (profileChanged) {
-            console.log(`     → Updating ${username} profile...`);
+            console.log(`     → Updating ${username} (changed: ${changedFields.slice(0, 3).join(', ')}${changedFields.length > 3 ? '...' : ''})...`);
             await updateAppUserProfile(config, appId, oktaUser.id, expectedProfile);
-            console.log(`     ✓ ${username} profile updated`);
+
+            // Also update entitlements for this user
+            if (resourceId && Object.keys(entitlementsMap).length > 0) {
+              const expectedEntitlements = buildUserEntitlements(record, entitlementsMap);
+              if (expectedEntitlements.length > 0) {
+                // Revoke existing grants first
+                const currentGrants = await getUserGrants(config, appId, oktaUser.id);
+                for (const grant of currentGrants) {
+                  try {
+                    await revokeGrant(config, grant.id);
+                  } catch (e) {
+                    // Continue
+                  }
+                }
+                // Create new grants
+                await createEntitlementGrant(config, appId, oktaUser.id, expectedEntitlements);
+                entitlementsUpdated++;
+              }
+            }
+
+            console.log(`     ✓ ${username} updated`);
             updatesNeeded++;
             updated++;
-          }
 
-          // Check entitlements - revoke existing and create new
-          if (resourceId && Object.keys(entitlementsMap).length > 0) {
-            const expectedEntitlements = buildUserEntitlements(record, entitlementsMap);
-            const currentGrants = await getUserGrants(config, appId, oktaUser.id);
-
-            // Simple approach: if we have grants to create, revoke old ones and create new
-            if (expectedEntitlements.length > 0 || currentGrants.length > 0) {
-              // Revoke existing grants
-              for (const grant of currentGrants) {
-                try {
-                  await revokeGrant(config, grant.id);
-                } catch (e) {
-                  // Continue
-                }
-              }
-
-              // Create new grants
-              if (expectedEntitlements.length > 0) {
-                await createEntitlementGrant(config, appId, oktaUser.id, expectedEntitlements);
-              }
+            // Rate limiting - pause after every 10 updates
+            if (updatesNeeded % 10 === 0) {
+              console.log(`     ⏸  Pausing to avoid rate limits...`);
+              await new Promise(resolve => setTimeout(resolve, 2000));
             }
           }
+
+          checkedCount++;
         } catch (error) {
           console.log(`     ✗ Failed to update ${username}: ${error.message}`);
           failed++;
+          // Add delay on error to avoid cascading rate limits
+          if (error.message.includes('429')) {
+            console.log(`     ⏸  Rate limited, waiting 5 seconds...`);
+            await new Promise(resolve => setTimeout(resolve, 5000));
+          }
         }
       }
 
       if (updatesNeeded === 0) {
-        console.log('     ✓ No profile updates needed');
+        console.log(`     ✓ No changes detected (checked ${checkedCount} users)`);
+      } else {
+        console.log(`     ✓ Updated ${updatesNeeded} user(s), ${entitlementsUpdated} entitlement grant(s)`);
       }
       console.log('');
     }
