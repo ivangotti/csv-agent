@@ -1,6 +1,6 @@
 # Okta Disconnected App Governance Connector
 
-A Node.js application that automates **Disconnected Application** creation for **Okta Identity Governance (OIG)**, enabling full governance capabilities for applications that don't have direct Okta integration.
+A modern governance connector that brings any application under **Okta Identity Governance (OIG)** control—no native integration required. Simply provide a CSV file and let the connector automatically create disconnected apps, provision users, manage entitlements, and keep everything in sync.
 
 ## Why Disconnected Apps?
 
@@ -15,12 +15,23 @@ Disconnected applications in Okta Identity Governance allow you to:
 
 ## Features
 
-- **Disconnected App Creation**: Automatically creates applications from CSV filenames for OIG governance
-- **Custom Attributes**: Creates app user schema attributes from CSV columns
-- **Profile Mapping**: Intelligently maps CSV columns to Okta user profile fields
-- **User Provisioning**: Creates/updates users and assigns them to applications
-- **Entitlement Management**: Automatically enables governance, creates entitlements, and grants them to users - **no manual setup required**
-- **Dynamic Processing**: Works with any CSV structure - no hardcoded column names
+### Core Capabilities
+- **Disconnected App Creation**: Automatically creates governance-enabled applications from CSV filenames
+- **User Provisioning**: Creates, updates, and removes users based on CSV data
+- **Entitlement Management**: Auto-creates entitlements from `ent_*` columns and grants them to users
+- **Profile Mapping**: Intelligently maps 50+ CSV column variations to Okta user profile fields
+- **Custom Attributes**: Dynamically creates app user schema attributes from any CSV structure
+
+### Scheduled Sync & Change Detection
+- **Continuous Monitoring**: Runs as an agent, periodically checking for CSV changes
+- **Smart Change Detection**: Detects new users, removed users, and attribute/entitlement changes
+- **Dynamic Entitlement Values**: Automatically creates new entitlement values when they appear in CSV
+- **Verbose Sync Results**: Detailed reporting after each sync cycle
+
+### Reliability & Performance
+- **Token Auto-Refresh**: OAuth tokens automatically refresh before expiration
+- **Rate Limit Handling**: Built-in retry logic with backoff for Okta API limits
+- **Error Recovery**: Automatic retry on transient failures (401, 429 errors)
 
 ## Prerequisites
 
